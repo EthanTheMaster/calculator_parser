@@ -3,12 +3,12 @@ use lexer::{Token};
 use std::collections::HashMap;
 use std::iter::FromIterator;
 use std::cmp::Ordering;
-use crate::calculator::ast::{Node, Values, Expr, UnaryOp, BinOp};
+use crate::calculator::ast::{Node, Expr, UnaryOp, BinOp};
 
 pub mod ast;
 pub mod lexer;
 
-type Nonterminal = &'static str;
+pub type Nonterminal = &'static str;
 
 const START: Nonterminal = "Start";
 const EXPR: Nonterminal = "Expression";
@@ -59,14 +59,21 @@ impl<'a> Tag<'a> {
     }
 }
 
-type ActionTable = HashMap<ActionQuery<Nonterminal>, Action>;
+pub type ActionTable = HashMap<ActionQuery<Nonterminal>, Action>;
 pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, ActionTable) {
     let op_disambiguation_map: HashMap<Token, DisambiguationTag> = HashMap::from_iter(vec![
         (Token::Add, DisambiguationTag::new(Some(Associativity::Left), Some(0))),
         (Token::Sub, DisambiguationTag::new(Some(Associativity::Left), Some(0))),
         (Token::Mult, DisambiguationTag::new(Some(Associativity::Left), Some(1))),
         (Token::Div, DisambiguationTag::new(Some(Associativity::Left), Some(1))),
-        (Token::Exp, DisambiguationTag::new(Some(Associativity::Right), Some(2)))
+        (Token::Exp, DisambiguationTag::new(Some(Associativity::Right), Some(2))),
+
+        // Treat these next tokens as if initiating multiplication
+        (Token::Int(Default::default()).normalize(), DisambiguationTag::new(Some(Associativity::Left), Some(1))),
+        (Token::Float(Default::default()).normalize(), DisambiguationTag::new(Some(Associativity::Left), Some(1))),
+        (Token::Id(Default::default()).normalize(), DisambiguationTag::new(Some(Associativity::Left), Some(1))),
+        (Token::LParen, DisambiguationTag::new(Some(Associativity::Left), Some(1))),
+
     ].into_iter());
     // Define Grammar
     let production_rules: Vec<ProductionRule<Nonterminal, Tag>> = vec![
@@ -98,17 +105,8 @@ pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, Ac
                 DisambiguationTag::empty(),
                 &move |mut children| {
                     let int_terminal = children.pop().unwrap();
-                    if let Node::Terminal(Token::Int(int_string)) = int_terminal {
-                        let int_parse = int_string.parse::<i64>().map_err(|_| format!("Failed to parse int."));
-                        match int_parse {
-                            Ok(int) => {
-                                Expr::Number(Values::Int(int)).evaluate().map(|expr_node| Node::Expr(expr_node))
-                            },
-                            Err(msg) => {
-                                Err(msg)
-                            },
-                        }
-
+                    if let Node::Terminal(token) = int_terminal {
+                        Expr::evaluate_token(&token).map(|expr_node| Node::Expr(expr_node))
                     } else {
                         panic!("Shift/Reduce parsing failure");
                     }
@@ -123,17 +121,8 @@ pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, Ac
                 DisambiguationTag::empty(),
                  &move |mut children| {
                      let float_terminal = children.pop().unwrap();
-                     if let Node::Terminal(Token::Float(float_string)) = float_terminal {
-                         let float_parse = float_string.parse::<f64>().map_err(|_| format!("Failed to parse float."));
-                         match float_parse {
-                             Ok(float) => {
-                                 Expr::Number(Values::Float(float)).evaluate().map(|expr_node| Node::Expr(expr_node))
-                             },
-                             Err(msg) => {
-                                 Err(msg)
-                             },
-                         }
-
+                     if let Node::Terminal(token) = float_terminal {
+                         Expr::evaluate_token(&token).map(|expr_node| Node::Expr(expr_node))
                      } else {
                          panic!("Shift/Reduce parsing failure");
                      }
@@ -156,27 +145,6 @@ pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, Ac
                      let _rparen = children.pop();
                      Ok(expr)
                  }
-            )
-        ),
-        // Negation of an Expression
-        ProductionRule::new(
-            EXPR,
-            vec![
-                Symbol::Terminal(Token::Sub),
-                Symbol::Nonterminal(EXPR),
-            ],
-            Tag::new(
-                DisambiguationTag::new(None, Some(999)),
-                &move |mut children| {
-                    let _neg_sign = children.pop();
-                    let expr = children.pop().unwrap();
-                    if let Node::Expr(expr_node) = expr {
-                        let composite_expr = Expr::UnaryOp(UnaryOp::Neg, Box::new(expr_node));
-                        composite_expr.evaluate().map(|expr_node| Node::Expr(expr_node))
-                    } else {
-                        panic!("Shift/Reduce parsing failure");
-                    }
-                }
             )
         ),
         // Addition of two expressions
@@ -221,6 +189,27 @@ pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, Ac
                         Expr::BinOp(BinOp::Sub, Box::new(expr1_node), Box::new(expr2_node))
                             .evaluate()
                             .map(|expr_node| Node::Expr(expr_node))
+                    } else {
+                        panic!("Shift/Reduce parsing failure");
+                    }
+                }
+            )
+        ),
+        // Negation of an Expression
+        ProductionRule::new(
+            EXPR,
+            vec![
+                Symbol::Terminal(Token::Sub),
+                Symbol::Nonterminal(EXPR),
+            ],
+            Tag::new(
+                DisambiguationTag::new(None, Some(999)),
+                &move |mut children| {
+                    let _neg_sign = children.pop();
+                    let expr = children.pop().unwrap();
+                    if let Node::Expr(expr_node) = expr {
+                        let composite_expr = Expr::UnaryOp(UnaryOp::Neg, Box::new(expr_node));
+                        composite_expr.evaluate().map(|expr_node| Node::Expr(expr_node))
                     } else {
                         panic!("Shift/Reduce parsing failure");
                     }
@@ -325,6 +314,28 @@ pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, Ac
                 }
             )
         ),
+        // Treat side by side expressions as multiplication.
+        ProductionRule::new(
+            EXPR,
+            vec![
+                Symbol::Nonterminal(EXPR),
+                Symbol::Nonterminal(EXPR)
+            ],
+            Tag::new(
+                op_disambiguation_map.get(&Token::Mult).unwrap().clone(),
+                &move |mut children| {
+                    let expr1 = children.pop().unwrap();
+                    let expr2 = children.pop().unwrap();
+                    if let (Node::Expr(expr_node1), Node::Expr(expr_node2)) = (expr1, expr2) {
+                        Expr::BinOp(BinOp::Mult, Box::new(expr_node1), Box::new(expr_node2))
+                            .evaluate()
+                            .map(|expr_node| Node::Expr(expr_node))
+                    } else {
+                        panic!("Shift/Reduce parsing failure.");
+                    }
+                }
+            )
+        ),
         // ---Parameter Production---
         // Parameter may be empty
         ProductionRule::new(
@@ -396,47 +407,102 @@ pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, Ac
             )
         ),
     ];
+
     // Use parser to generate action table
     let lr_automata = LRAutomata::generate(production_rules, 0);
-    let (mut action_table, conflicts) = lr_automata.build_action_table();
-
+    let action_table = lr_automata.build_action_table();
+    let mut conflict_free_action_table = HashMap::new();
     // Resolve conflicts
-    for conflict in conflicts.iter() {
-        let production = &lr_automata.grammar_context.production_rules[conflict.reduce_production_id];
-        let conflict_symbol = &conflict.query.1;
-        if let Symbol::Terminal(token) = conflict_symbol {
-            let production_disambiguation = &production.tag.disambiguation;
-            let conflict_disambiguation = op_disambiguation_map.get(token).expect(format!("Cannot resolve conflict: {:?}", conflict).as_str());
-            if let Some(production_precedence) = production_disambiguation.precedence {
-                if let Some(conflict_precedence) = conflict_disambiguation.precedence {
-                    match production_precedence.cmp(&conflict_precedence) {
-                        Ordering::Less => {
-                            // Shift to keep parsing ... don't use default reduce
-                            *action_table.get_mut(&conflict.query).unwrap() = Action::Shift(conflict.shift_target);
-                        },
-                        Ordering::Equal => {
-                            // With equal precedence, check associativity. Left associativity means reduce (default), and
-                            // right associativity means shift to keep parsing the right side
-                            if let Some(Associativity::Right) = production_disambiguation.associativity {
-                                *action_table.get_mut(&conflict.query).unwrap() = Action::Shift(conflict.shift_target)
-                            }
-                        },
-                        Ordering::Greater => {
-                            // Use the default reduce behavior
-                        },
-                    }
+    for (query, mut action_list) in action_table {
+        // Conflict occurs when there are multiple actions that can be done for a given query
+        if action_list.len() > 1 {
+            // Iterate through entire list and pick best by comparing the current item with the
+            // known best, similar to finding the "max" in a list.
+            let mut chosen_action = action_list.pop().unwrap();
+            while !action_list.is_empty() {
+                let current = action_list.pop().unwrap();
+                // Given chosen_action and current, construct a pair where the first component
+                // is a shift (if possible). This is prevent redundant code.
+                let (action1, action2) = if let Action::Shift(_) = chosen_action {
+                    (&chosen_action, &current)
                 } else {
-                    panic!("Cannot resolve conflict: {:?}", conflict);
+                    (&current, &chosen_action)
+                };
+                match (action1, action2) {
+                    // Consider shift/reduce conflict
+                    (Action::Shift(target_state), Action::Reduce(rule_id, effective_size)) => {
+                        let lookahead_symbol = if let Symbol::Terminal(lookahead) = &query.1 {
+                            lookahead
+                        } else {
+                            panic!("Lookahead needs to be a terminal.");
+                        };
+                        // Look at precedence tag
+                        let rule_disambiguation = &lr_automata.grammar_context.production_rules[*rule_id].tag.disambiguation;
+                        let symbol_disambiguation = op_disambiguation_map
+                            .get(lookahead_symbol)
+                            .expect("Attempted to disambiguate symbol which has no data.");
+                        match (rule_disambiguation.precedence, symbol_disambiguation.precedence) {
+                            (Some(p1), Some(p2)) => {
+                                let shift = Action::Shift(*target_state);
+                                let reduce = Action::Reduce(*rule_id, *effective_size);
+                                match p1.cmp(&p2) {
+                                    Ordering::Less => {
+                                        // reduce action has lower precedence than lookahead so shift to not
+                                        // prematurely reduce
+                                        chosen_action = shift;
+                                    },
+                                    Ordering::Equal => {
+                                        // With equal precedence, look at reduce operation's associativity
+                                        match rule_disambiguation.associativity {
+                                            Some(Associativity::Left) => {
+                                                chosen_action = reduce;
+                                            },
+                                            Some(Associativity::Right) => {
+                                                chosen_action = shift;
+                                            },
+                                            None => {
+                                                panic!("There is not enough data to resolve shift/reduce conflict.");
+                                            },
+                                        }
+                                    },
+                                    Ordering::Greater => {
+                                        // reduce action has higher precedence so reduce
+                                        chosen_action = reduce;
+                                    },
+                                }
+                            },
+                            _ => {
+                                panic!("There is not enough data to resolve shift/reduce conflict.");
+                            }
+                        }
+
+                    },
+                    // Consider reduce/reduce conflict
+                    (Action::Reduce(rule_id1, effective_size1), Action::Reduce(rule_id2, effective_size2)) => {
+                        println!("WARNING: Reduce/Reduce conflict between {} and {} given query {:?}.", rule_id1, rule_id2, query);
+                        // Resolve reduce/reduce conflict by choosing the rule that is listed "higher" or "first" when
+                        // listing production rules from top to bottom (ie the smaller the index the higher priority
+                        // or precedence it has).
+                        if rule_id1 < rule_id2 {
+                            chosen_action = Action::Reduce(*rule_id1, *effective_size1)
+                        } else {
+                            chosen_action = Action::Reduce(*rule_id2, *effective_size2)
+                        }
+                    },
+                    _ => {
+                        panic!("Impossible situation");
+                    }
                 }
-            } else {
-                panic!("Cannot resolve conflict: {:?}", conflict);
             }
+            // chosen_action is now the action with highest precedence
+            conflict_free_action_table.insert(query, chosen_action);
         } else {
-            panic!("Terminal has to be a conflict symbol.");
+            // There is no conflict. Take the only item in the action list
+            conflict_free_action_table.insert(query, action_list.pop().unwrap());
         }
     }
 
-    return (lr_automata.grammar_context, action_table);
+    return (lr_automata.grammar_context, conflict_free_action_table);
 }
 
 pub fn generate_parse_tree(
@@ -465,14 +531,14 @@ pub fn generate_parse_tree(
         }
         match action.unwrap() {
             Action::Shift(target_state_id) => {
-                // println!("Shifted {:?}", input[next_index]);
+                println!("Shifted {:?}", input[next_index]);
                 state_stack.push(*target_state_id);
                 node_stack.push(Node::Terminal(input[next_index].clone()));
                 next_index += 1;
             },
             Action::Reduce(reduce_production_id, effective_rule_size) => {
                 let production_rule = grammar_context.production_rules.get(*reduce_production_id).unwrap();
-                // println!("Reduced last {} symbol(s) on the stack with production {}: {}", effective_rule_size, production_rule.nonterminal, reduce_production_id);
+                println!("Reduced last {} symbol(s) on the stack with production {}: {}", effective_rule_size, production_rule.nonterminal, reduce_production_id);
 
                 let mut sdt_parameters: Vec<Node> = vec![];
                 // Order of nodes representing each symbol for the reduce rule is in reverse order.
@@ -498,7 +564,7 @@ pub fn generate_parse_tree(
                 }
             }
             Action::Accept => {
-                // println!("Accept!!!");
+                println!("Accept!!!");
                 // Current state should be S -> E$. but because we never did a reduce the last state
                 // on the node_stack should be E
                 return node_stack.pop().ok_or(format!("We messed up."));

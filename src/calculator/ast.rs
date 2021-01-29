@@ -49,6 +49,41 @@ pub enum Expr {
 }
 
 impl Expr {
+    // Evaluates a "number" token into an expression node if possible
+    pub fn evaluate_token(token: &Token) -> Result<ExprNode, String> {
+        match token {
+            Token::Int(n_str) => {
+                let n = n_str.parse::<i64>().map_err(|_| format!("Failed to parse int."));
+                match n {
+                    Ok(n) => {
+                        Expr::Number(Values::Int(n)).evaluate()
+                    },
+                    Err(msg) => {
+                        Err(msg)
+                    },
+                }
+            },
+            Token::Float(n_str) => {
+                let n = n_str.parse::<f64>().map_err(|_| format!("Failed to parse int."));
+                match n {
+                    Ok(n) => {
+                        Expr::Number(Values::Float(n)).evaluate()
+                    },
+                    Err(msg) => {
+                        Err(msg)
+                    },
+                }
+            },
+            _ => {
+                Err(format!("Cannot evaluate token."))
+            }
+        }
+    }
+
+    // Expr is a sort of AST node that describes how computation should be done. Evaluate this
+    // Expr and package it into an ExprNode which holds both the computation and the evaluated
+    // result which can make evaluating other expressions easier. Values for a tree rooted at a
+    // node is already precomputed.
     pub fn evaluate(self) -> Result<ExprNode, String> {
         match self {
             Expr::Number(value) => {

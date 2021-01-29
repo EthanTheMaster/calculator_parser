@@ -9,6 +9,7 @@ use std::iter::FromIterator;
 use std::fmt::{Debug, Formatter};
 use std::fmt;
 use std::hash::Hash;
+use crate::parser::Action::Reduce;
 
 // Set up a Context-Free Grammar
 #[derive(Hash, Eq, Clone, Debug)]
@@ -457,14 +458,6 @@ pub enum Action {
     Accept,
 }
 
-#[derive(Debug)]
-pub struct ShiftReduceConflict<Id>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
-{
-    pub query: ActionQuery<Id>,
-    pub shift_target: usize,
-    pub reduce_production_id: usize
-}
 
 impl<Id, Tag> LRAutomata<Id, Tag>
     where Id: PartialEq + Eq + Clone + Hash + Debug
@@ -535,22 +528,28 @@ impl<Id, Tag> LRAutomata<Id, Tag>
         return res;
     }
 
-    // Builds a table that maps action query to an action and allows the parser information to be
-    // precomputed for future parsing. The second component of the result has a list of queries
-    // that create a shift/reduce conflict. In the event of a conflict, the table will default
-    // to a reduce.
-    pub fn build_action_table(&self) -> (HashMap<ActionQuery<Id>, Action>, Vec<ShiftReduceConflict<Id>>) {
+    // Builds a table that maps an action query to a list of actions and allows the parser
+    // information to be precomputed for future parsing. The list of actions will contain 1 action
+    // if there is no parsing conflict. The list of action is there to resolve conflicts.
+    pub fn build_action_table(&self) -> HashMap<ActionQuery<Id>, Vec<Action>> {
         let mut res = HashMap::new();
-        let mut conflicts = vec![];
         for (state_id, state) in self.states.iter().enumerate() {
             // Compute Shift/Goto Rules
             for (symbol, target_state_id) in state.transitions.iter() {
                 match symbol {
                     Symbol::Nonterminal(_) => {
-                        res.insert((state_id, symbol.clone()), Action::Shift(*target_state_id));
+                        let query = (state_id, symbol.clone());
+                        if res.get(&query).is_none() {
+                            res.insert(query.clone(), vec![]);
+                        }
+                        res.get_mut(&query).unwrap().push(Action::Shift(*target_state_id));
                     },
                     Symbol::Terminal(token) => {
-                        res.insert((state_id, Symbol::Terminal(token.normalize())), Action::Shift(*target_state_id));
+                        let query = (state_id, Symbol::Terminal(token.normalize()));
+                        if res.get(&query).is_none() {
+                            res.insert(query.clone(), vec![]);
+                        }
+                        res.get_mut(&query).unwrap().push(Action::Shift(*target_state_id));
                     },
                     Symbol::Epsilon => {panic!("Epsilon should not be a transition symbol.")},
                     Symbol::EndMarker => {
@@ -560,7 +559,11 @@ impl<Id, Tag> LRAutomata<Id, Tag>
                         }) && state.transitions.contains_key(&Symbol::EndMarker);
 
                         if can_accept {
-                            res.insert((state_id, Symbol::EndMarker), Action::Accept);
+                            let query = (state_id, Symbol::EndMarker);
+                            if res.get(&query).is_none() {
+                                res.insert(query.clone(), vec![]);
+                            }
+                            res.get_mut(&query).unwrap().push(Action::Accept);
                         }
                     },
                 }
@@ -584,20 +587,15 @@ impl<Id, Tag> LRAutomata<Id, Tag>
 
                     // `lookaheads` contains all valid symbols that can follow the current rule
                     for lookahead in lookaheads.iter() {
-                        if let Some(Action::Shift(shift_target)) = res.insert((state_id, lookahead.clone()), Action::Reduce(item.rule_id, effective_rule_size)) {
-                            // Insertion led to an overwrite which means there was already an action in place. This action
-                            // must be a shift from before. Overwrite action with a reduce and note the conflict.
-                            let conflict = ShiftReduceConflict {
-                                query: (state_id, lookahead.clone()),
-                                shift_target,
-                                reduce_production_id: item.rule_id
-                            };
-                            conflicts.push(conflict);
+                        let query = (state_id, lookahead.clone());
+                        if res.get(&query).is_none() {
+                            res.insert(query.clone(), vec![]);
                         }
+                        res.get_mut(&query).unwrap().push(Reduce(item.rule_id, effective_rule_size));
                     }
                 }
             }
         }
-        return (res, conflicts);
+        return res;
     }
 }
