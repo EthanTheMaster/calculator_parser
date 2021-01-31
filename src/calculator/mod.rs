@@ -1,4 +1,4 @@
-use crate::parser::{ProductionRule, Symbol, LRAutomata, Action, ActionQuery, GrammarContext};
+use crate::parser::{ProductionRule, Symbol, LRAutomata, Action, ActionQuery, GrammarContext, Normalize};
 use lexer::{Token};
 use std::collections::HashMap;
 use std::iter::FromIterator;
@@ -59,8 +59,8 @@ impl<'a> Tag<'a> {
     }
 }
 
-pub type ActionTable = HashMap<ActionQuery<Nonterminal>, Action>;
-pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, ActionTable) {
+pub type ActionTable = HashMap<ActionQuery<Nonterminal, Token>, Action>;
+pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>, Token>, ActionTable) {
     let op_disambiguation_map: HashMap<Token, DisambiguationTag> = HashMap::from_iter(vec![
         (Token::Add, DisambiguationTag::new(Some(Associativity::Left), Some(0))),
         (Token::Sub, DisambiguationTag::new(Some(Associativity::Left), Some(0))),
@@ -76,7 +76,7 @@ pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, Ac
 
     ].into_iter());
     // Define Grammar
-    let production_rules: Vec<ProductionRule<Nonterminal, Tag>> = vec![
+    let production_rules: Vec<ProductionRule<Nonterminal, Tag, Token>> = vec![
         //---Start Production---
         ProductionRule::new(
             START,
@@ -508,7 +508,7 @@ pub fn generate_action_table<'a>() ->  (GrammarContext<Nonterminal, Tag<'a>>, Ac
 pub fn generate_parse_tree(
     input: &Vec<Token>,
     action_table: &ActionTable,
-    grammar_context: &GrammarContext<Nonterminal, Tag>
+    grammar_context: &GrammarContext<Nonterminal, Tag, Token>
 ) -> Result<Node, String>
 {
     println!("{:?}", input);

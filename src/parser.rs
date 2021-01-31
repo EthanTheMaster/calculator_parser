@@ -3,7 +3,6 @@ This implementation is based on Sections 4.6 - 4.8 of Compilers Principles, Tech
 Second Edition. The parser is based on the LR(1) parser implementation in Section 4.7.
 */
 
-use crate::calculator::lexer::Token;
 use std::collections::{HashMap, HashSet};
 use std::iter::FromIterator;
 use std::fmt::{Debug, Formatter};
@@ -11,11 +10,20 @@ use std::fmt;
 use std::hash::Hash;
 use crate::parser::Action::Reduce;
 
+// A trait token needs to implement where attribute data is stripped so that equality between
+// tokens can be done. Every token of a certain is normalized to the same form for consistency.
+pub trait Normalize {
+    fn normalize(&self) -> Self;
+}
+
 // Set up a Context-Free Grammar
 #[derive(Hash, Eq, Clone, Debug)]
 // Id is used to identify nonterminals
-pub enum Symbol<Id>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+// Token is type that holds how tokens should be represented which will be wrapped as a terminal
+//      in the grammar
+pub enum Symbol<Id, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
     Nonterminal(Id),
     Terminal(Token),
@@ -24,8 +32,9 @@ pub enum Symbol<Id>
     EndMarker,
 }
 
-impl<Id> PartialEq for Symbol<Id>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+impl<Id, Token> PartialEq for Symbol<Id, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
     // Check if two symbols are equal where terminal equality does not regard attribute information
     fn eq(&self, other: &Self) -> bool {
@@ -63,21 +72,24 @@ impl<Id> PartialEq for Symbol<Id>
 }
 
 // Tag type represents any sort of accompanying information that might be useful to keep about the
-// production during parsing, particularly when resolving parsing conflicts.
-pub struct ProductionRule<Id, Tag>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+// production during parsing. For example, disambiguation data can be added to resolve parsing
+// conflicts. Data about syntax directed instructions may also be incorporated in the tag.
+pub struct ProductionRule<Id, Tag, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
     pub nonterminal: Id,
     // String of symbols that represents one possible production for the nonterminal
     // associated with id.
-    pub rule: Vec<Symbol<Id>>,
+    pub rule: Vec<Symbol<Id, Token>>,
     pub tag: Tag,
 }
 
-impl<Id, Tag> ProductionRule<Id, Tag>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+impl<Id, Tag, Token> ProductionRule<Id, Tag, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
-    pub fn new(id: Id, rule: Vec<Symbol<Id>>, tag: Tag) -> Self {
+    pub fn new(id: Id, rule: Vec<Symbol<Id, Token>>, tag: Tag) -> Self {
         ProductionRule {
             nonterminal: id,
             rule,
@@ -87,14 +99,15 @@ impl<Id, Tag> ProductionRule<Id, Tag>
 }
 
 
-type FirstTable<Id> = HashMap<Id, HashSet<Symbol<Id>>>;
+type FirstTable<Id, Token> = HashMap<Id, HashSet<Symbol<Id, Token>>>;
 // Given a list of production rules, compute first which returns a mapping from
 // nonterminal ids to a list of symbols(all except nonterminals)
-pub fn first<Id, Tag>(productions: &Vec<ProductionRule<Id, Tag>>) -> FirstTable<Id>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+fn first<Id, Tag, Token>(productions: &Vec<ProductionRule<Id, Tag, Token>>) -> FirstTable<Id, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
     let mut has_table_converged = false;
-    let mut res: FirstTable<Id> = HashMap::new();
+    let mut res: FirstTable<Id, Token> = HashMap::new();
     // Initialize table
     for production in productions {
         res.insert(production.nonterminal.clone(), HashSet::new());
@@ -119,8 +132,9 @@ pub fn first<Id, Tag>(productions: &Vec<ProductionRule<Id, Tag>>) -> FirstTable<
 
 // Given a list of grammar symbols, compute first on it making use of a supplied pre-computed
 // FirstTable.
-fn first_symbol_string<Id>(symbol_string: &Vec<Symbol<Id>>, context: &FirstTable<Id>) -> HashSet<Symbol<Id>>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+fn first_symbol_string<Id, Token>(symbol_string: &Vec<Symbol<Id, Token>>, context: &FirstTable<Id, Token>) -> HashSet<Symbol<Id, Token>>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
     let mut res = HashSet::new();
     // a symbol string is nullable iff it can derive the empty string/epsilon ... we will attempt
@@ -180,8 +194,9 @@ fn first_symbol_string<Id>(symbol_string: &Vec<Symbol<Id>>, context: &FirstTable
 }
 
 // Creates a map that maps nonterminal ids to their production rules
-pub fn build_nonterminal_production_map<Id, Tag>(production_rules: &Vec<ProductionRule<Id, Tag>>) -> HashMap<Id, Vec<usize>>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+fn build_nonterminal_production_map<Id, Tag, Token>(production_rules: &Vec<ProductionRule<Id, Tag, Token>>) -> HashMap<Id, Vec<usize>>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
     let mut res = HashMap::new();
     for (production_id, production) in production_rules.iter().enumerate() {
@@ -199,7 +214,7 @@ pub fn build_nonterminal_production_map<Id, Tag>(production_rules: &Vec<Producti
 }
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone)]
-pub struct LRItem {
+struct LRItem {
     // Id that identifies a particular production rule. Id will be derived from the index of the
     // production rule in a Vec
     rule_id: usize,
@@ -220,19 +235,21 @@ impl LRItem {
 
 // Structure that holds precomputed information about the grammar that is useful when generating
 // a parser
-pub struct GrammarContext<Id, Tag>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+pub struct GrammarContext<Id, Tag, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
-    pub production_rules: Vec<ProductionRule<Id, Tag>>,
+    pub production_rules: Vec<ProductionRule<Id, Tag, Token>>,
     // Maps nonterminal ids to a list of indices that refer to production rules in `production_rules`
     nonterminal_production_map: HashMap<Id, Vec<usize>>,
-    first_table: FirstTable<Id>
+    first_table: FirstTable<Id, Token>
 }
 
-impl<Id, Tag> GrammarContext<Id, Tag>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+impl<Id, Tag, Token> GrammarContext<Id, Tag, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
-    fn new(production_rules: Vec<ProductionRule<Id, Tag>>) -> GrammarContext<Id, Tag> {
+    fn new(production_rules: Vec<ProductionRule<Id, Tag, Token>>) -> GrammarContext<Id, Tag, Token> {
         let nonterminal_production_map = build_nonterminal_production_map(&production_rules);
         let first_table = first(&production_rules);
         GrammarContext {
@@ -245,17 +262,21 @@ impl<Id, Tag> GrammarContext<Id, Tag>
 
 
 #[derive(Eq, Clone)]
-pub struct LRState<Id>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+struct LRState<Id, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
     // Functions as a set of LR(0) items with each item associated with a set
     // of lookahead symbols for LR(1) parsing
-    items: HashMap<LRItem, HashSet<Symbol<Id>>>,
+    items: HashMap<LRItem, HashSet<Symbol<Id, Token>>>,
     // usize should refer to the global id of an LRState
-    transitions: HashMap<Symbol<Id>, usize>,
+    transitions: HashMap<Symbol<Id, Token>, usize>,
 }
 
-impl<Id: PartialEq + Eq + Clone + Hash + Debug> Debug for LRState<Id> {
+impl<Id, Token> Debug for LRState<Id, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("LRState")
             .field("items", &self.items)
@@ -264,18 +285,20 @@ impl<Id: PartialEq + Eq + Clone + Hash + Debug> Debug for LRState<Id> {
     }
 }
 
-impl<Id> PartialEq for LRState<Id>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+impl<Id, Token> PartialEq for LRState<Id, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
     fn eq(&self, other: &Self) -> bool {
         return self.items == other.items;
     }
 }
 
-impl<Id> LRState<Id>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+impl<Id, Token> LRState<Id, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
-    pub fn new(items: Vec<(LRItem, HashSet<Symbol<Id>>)>) -> Self {
+    pub fn new(items: Vec<(LRItem, HashSet<Symbol<Id, Token>>)>) -> Self {
         let res = LRState {
             items: HashMap::from_iter(items.into_iter()),
             transitions: Default::default(),
@@ -283,7 +306,8 @@ impl<Id> LRState<Id>
         return res;
     }
 
-    fn is_item_in_set(&self, item: &LRItem, lookahead: &Symbol<Id>) -> bool {
+    // Helper function to check if an LR(0) item + a lookahead symbol is in the state
+    fn is_item_in_set(&self, item: &LRItem, lookahead: &Symbol<Id, Token>) -> bool {
         return if self.items.contains_key(&item) {
             if let Some(lookaheads) = self.items.get(&item) {
                 lookaheads.contains(lookahead)
@@ -298,13 +322,13 @@ impl<Id> LRState<Id>
     // Applies the Closure operation on an LR State
     // - production_rules essentially maps a production rule id to its rule
     // - terminal_production_map maps a terminal id to a list of production rule ids
-    pub fn closure<Tag>(&mut self, grammar_context: &GrammarContext<Id, Tag>) {
+    fn closure<Tag>(&mut self, grammar_context: &GrammarContext<Id, Tag, Token>) {
         let mut has_converged = false;
         while !has_converged {
             has_converged = true; // We will attempt to falsify this
             // List of LRItem-Lookahead symbol pairs to add that are generated as we look at each
             // LR(1) item
-            let mut derived_items: Vec<(LRItem, Symbol<Id>)> = vec![];
+            let mut derived_items: Vec<(LRItem, Symbol<Id, Token>)> = vec![];
             // items that have epsilon as next symbol are not needed
             let mut items_to_delete: Vec<LRItem> = vec![];
             for (item, lookaheads) in self.items.iter() {
@@ -388,7 +412,7 @@ impl<Id> LRState<Id>
     }
 
     // production_rules maps id/indices to production rule
-    pub fn valid_next_symbols<Tag>(&self, grammar_context: &GrammarContext<Id, Tag>) -> HashSet<Symbol<Id>> {
+    fn valid_next_symbols<Tag>(&self, grammar_context: &GrammarContext<Id, Tag, Token>) -> HashSet<Symbol<Id, Token>> {
         return self.items.iter()
             .map(|(item, _)| {
                 let next_symbol_option = grammar_context.production_rules.get(item.rule_id).unwrap().rule.get(item.dot_position);
@@ -414,8 +438,8 @@ impl<Id> LRState<Id>
             .collect();
     }
 
-    pub fn goto<Tag>(&self, symbol: &Symbol<Id>, grammar_context: &GrammarContext<Id, Tag>) -> LRState<Id> {
-        let mut new_items: HashMap<LRItem, HashSet<Symbol<Id>>> = HashMap::new();
+    fn goto<Tag>(&self, symbol: &Symbol<Id, Token>, grammar_context: &GrammarContext<Id, Tag, Token>) -> LRState<Id, Token> {
+        let mut new_items: HashMap<LRItem, HashSet<Symbol<Id, Token>>> = HashMap::new();
         for (item, lookaheads) in self.items.iter() {
             let rule = grammar_context.production_rules.get(item.rule_id).unwrap();
             let next_symbol_option = rule.rule.get(item.dot_position);
@@ -437,17 +461,18 @@ impl<Id> LRState<Id>
     }
 }
 
-pub struct LRAutomata<Id, Tag>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+pub struct LRAutomata<Id, Tag, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
     // 0th state is the start state
-    pub states: Vec<LRState<Id>>,
-    pub grammar_context: GrammarContext<Id, Tag>,
+    states: Vec<LRState<Id, Token>>,
+    pub grammar_context: GrammarContext<Id, Tag, Token>,
     pub start_production_id: usize,
 }
 
 // A query consists of the current state id and the next symbol to be consumed in the input
-pub type ActionQuery<Id> = (usize, Symbol<Id>);
+pub type ActionQuery<Id, Token> = (usize, Symbol<Id, Token>);
 #[derive(Debug)]
 pub enum Action {
     // usize refers to which state to transition to
@@ -459,10 +484,12 @@ pub enum Action {
 }
 
 
-impl<Id, Tag> LRAutomata<Id, Tag>
-    where Id: PartialEq + Eq + Clone + Hash + Debug
+impl<Id, Tag, Token> LRAutomata<Id, Tag, Token>
+    where Id: PartialEq + Eq + Clone + Hash + Debug,
+          Token: PartialEq + Eq + Clone + Hash + Debug + Normalize
 {
-    fn compute_all_states(mut start_state: LRState<Id>, grammar_context: &GrammarContext<Id, Tag>) -> Vec<LRState<Id>> {
+    // Determine all the states in the LR automata so that transitions can be added later
+    fn compute_all_states(mut start_state: LRState<Id, Token>, grammar_context: &GrammarContext<Id, Tag, Token>) -> Vec<LRState<Id, Token>> {
         start_state.closure(&grammar_context);
 
         // To determine all states in the automata, perform DPS
@@ -484,7 +511,8 @@ impl<Id, Tag> LRAutomata<Id, Tag>
         return explored;
     }
 
-    fn compute_transitions(states: &mut Vec<LRState<Id>>, grammar_context: &GrammarContext<Id, Tag>) {
+    // Determine the transitions between LR states after computing all the states.
+    fn compute_transitions(states: &mut Vec<LRState<Id, Token>>, grammar_context: &GrammarContext<Id, Tag, Token>) {
         let states_clone = states.clone();
         for state in states.iter_mut() {
             let valid_transition_symbols = state.valid_next_symbols(grammar_context);
@@ -503,10 +531,13 @@ impl<Id, Tag> LRAutomata<Id, Tag>
         }
     }
 
+    // Given the production rules for a Context Free Grammar, generate the LR automata that the
+    // action table will be based on. The first state in `states` will be the start state of the
+    // automata.
     pub fn generate(
-        production_rules: Vec<ProductionRule<Id, Tag>>,
+        production_rules: Vec<ProductionRule<Id, Tag, Token>>,
         start_production_id: usize
-    ) -> LRAutomata<Id, Tag> {
+    ) -> LRAutomata<Id, Tag, Token> {
         let grammar_context = GrammarContext::new(production_rules);
         // println!("{:#?}", grammar_context.first_table);
         // println!("{:#?}", grammar_context.nonterminal_production_map);
@@ -531,7 +562,7 @@ impl<Id, Tag> LRAutomata<Id, Tag>
     // Builds a table that maps an action query to a list of actions and allows the parser
     // information to be precomputed for future parsing. The list of actions will contain 1 action
     // if there is no parsing conflict. The list of action is there to resolve conflicts.
-    pub fn build_action_table(&self) -> HashMap<ActionQuery<Id>, Vec<Action>> {
+    pub fn build_action_table(&self) -> HashMap<ActionQuery<Id, Token>, Vec<Action>> {
         let mut res = HashMap::new();
         for (state_id, state) in self.states.iter().enumerate() {
             // Compute Shift/Goto Rules

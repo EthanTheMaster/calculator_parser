@@ -4,9 +4,10 @@ use crate::calculator::{lexer, Tag, Nonterminal, ActionTable};
 use crate::calculator;
 use crate::parser::GrammarContext;
 use std::cell::RefCell;
+use crate::calculator::lexer::Token;
 
 thread_local! {
-    pub static CONTEXT_TABLE: RefCell<(GrammarContext<Nonterminal, Tag<'static>>, ActionTable)> = RefCell::new(calculator::generate_action_table());
+    pub static CONTEXT_TABLE: RefCell<(GrammarContext<Nonterminal, Tag<'static>, Token>, ActionTable)> = RefCell::new(calculator::generate_action_table());
 }
 
 #[allow(dead_code)]

@@ -1,3 +1,4 @@
+use crate::parser::Normalize;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum Token {
@@ -16,9 +17,9 @@ pub enum Token {
     Comma
 }
 
-impl Token {
+impl Normalize for Token {
     // Allows us to check if two tokens are the same "type" by stripping out attribute information
-    pub fn normalize(&self) -> Token {
+    fn normalize(&self) -> Token {
         return match self {
             Token::Space
             | Token::LParen
